@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Yossi the anteater: mascot of the Yossi voice assistant (drawn 2026-11-20, CC0) -->
+  <circle cx="256" cy="256" r="256" fill="#1f7a6d"/>
+  <!-- bushy tail -->
+  <path d="M120 300 C 40 260, 40 150, 110 120 C 130 170, 150 220, 170 270 Z" fill="#5a4636"/>
+  <path d="M112 128 C 70 160, 70 230, 118 280" stroke="#3e2f24" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <!-- body -->
+  <ellipse cx="225" cy="305" rx="115" ry="80" fill="#9c8370"/>
+  <!-- legs -->
+  <rect x="150" y="345" width="38" height="75" rx="16" fill="#3e2f24"/>
+  <rect x="262" y="345" width="38" height="75" rx="16" fill="#3e2f24"/>
+  <path d="M150 412 h44 v14 h-44z" fill="#f2ead9"/>
+  <path d="M262 412 h44 v14 h-44z" fill="#f2ead9"/>
+  <!-- the anteater's shoulder stripe -->
+  <path d="M190 245 C 240 270, 290 330, 300 380 L 270 385 C 255 335, 220 290, 175 270 Z" fill="#2a211a"/>
+  <path d="M205 238 C 250 262, 300 320, 318 370 L 300 380 C 290 330, 240 270, 190 245 Z" fill="#f2ead9"/>
+  <!-- head -->
+  <ellipse cx="320" cy="225" rx="70" ry="58" fill="#b49a85"/>
+  <!-- long snout -->
+  <path d="M360 200 C 410 205, 455 225, 478 250 C 470 262, 430 262, 360 262 Z" fill="#b49a85"/>
+  <circle cx="474" cy="252" r="10" fill="#2a211a"/>
+  <!-- ear -->
+  <ellipse cx="290" cy="178" rx="20" ry="16" fill="#9c8370"/>
+  <ellipse cx="290" cy="180" rx="11" ry="8" fill="#6e5848"/>
+  <!-- eye, friendly -->
+  <circle cx="335" cy="210" r="13" fill="#fff"/>
+  <circle cx="339" cy="211" r="7.5" fill="#1b1410"/>
+  <circle cx="342" cy="207" r="2.5" fill="#fff"/>
+  <!-- cheek -->
+  <ellipse cx="350" cy="240" rx="13" ry="8" fill="#e08f7a" opacity="0.7"/>
+  <!-- headset: band, earcup, mic boom toward the snout -->
+  <path d="M262 205 C 270 140, 345 135, 365 185" stroke="#20232a" stroke-width="10" fill="none" stroke-linecap="round"/>
+  <circle cx="290" cy="208" r="16" fill="#20232a"/>
+  <path d="M296 220 C 315 262, 360 278, 400 272" stroke="#20232a" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <circle cx="404" cy="271" r="8" fill="#f5b942"/>
+</svg>

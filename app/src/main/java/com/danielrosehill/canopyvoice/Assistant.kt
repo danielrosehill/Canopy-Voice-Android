@@ -1,0 +1,146 @@
+package com.danielrosehill.canopyvoice
+
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.ToneGenerator
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.File
+import kotlin.coroutines.resume
+
+enum class Phase { Idle, Listening, Thinking, Speaking }
+
+/**
+ * One assistant per process, shared by the screen, the wake word service and the system assist session.
+ * [mic] is held by whoever is capturing: the wake word loop gives it up as soon as [phase] leaves Idle.
+ */
+object Assistant {
+    val phase = MutableStateFlow(Phase.Idle)
+    val level = MutableStateFlow(0)
+    val said = MutableStateFlow("")
+    val reply = MutableStateFlow("")
+    val error = MutableStateFlow("")
+    /** Smoothed wake word probability, for the readout in Settings. */
+    val wakeLevel = MutableStateFlow(0f)
+    val wakeRunning = MutableStateFlow(false)
+
+    val mic = Mutex()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var job: Job? = null
+    private var player: MediaPlayer? = null
+    private var recorder: Recorder? = null
+
+    // Follow-ups: the server keeps a conversation for session_ttl_s (180 s by default); stay under it.
+    private var conversationId: String? = null
+    private var conversationAt = 0L
+    private const val TTL_MS = 170_000L
+
+    fun currentConversation(): String? =
+        conversationId?.takeIf { System.currentTimeMillis() - conversationAt < TTL_MS }
+
+    fun newConversation() { conversationId = null }
+
+    fun stopRecording() { recorder?.requestStop() }
+
+    fun cancel() {
+        recorder?.requestStop()
+        job?.cancel()
+        job = null
+        player?.release()
+        player = null
+        phase.value = Phase.Idle
+    }
+
+    fun listen(context: Context, chime: Boolean = false) {
+        val app = context.applicationContext
+        val settings = Settings(app)
+        if (!settings.configured) { error.value = "Set the server and token in Settings"; return }
+        cancel()
+        error.value = ""
+        phase.value = Phase.Listening // the wake word loop sees this and releases the mic
+        job = scope.launch {
+            val rec = Recorder(app).also { recorder = it }
+            val audio = try {
+                mic.withLock {
+                    if (chime) beep()
+                    rec.record(onLevel = { level.value = it })
+                }
+            } catch (e: Exception) {
+                error.value = "Recording failed: ${e.message}"; phase.value = Phase.Idle; return@launch
+            } finally {
+                level.value = 0
+                recorder = null
+            }
+            if (audio == null) { phase.value = Phase.Idle; return@launch }
+            phase.value = Phase.Thinking
+            val client = VoiceClient(settings.serverUrl, settings.token)
+            handle(app, settings, runCatching { withContext(Dispatchers.IO) { client.audioTurn(audio, currentConversation()) } })
+        }
+    }
+
+    fun sendText(context: Context, text: String) {
+        val app = context.applicationContext
+        val settings = Settings(app)
+        if (!settings.configured) { error.value = "Set the server and token in Settings"; return }
+        cancel()
+        error.value = ""
+        phase.value = Phase.Thinking
+        job = scope.launch {
+            val client = VoiceClient(settings.serverUrl, settings.token)
+            handle(app, settings, runCatching { withContext(Dispatchers.IO) { client.textTurn(text, currentConversation()) } })
+        }
+    }
+
+    private suspend fun handle(app: Context, settings: Settings, result: Result<TurnResult>) {
+        val r = result.getOrElse { e ->
+            error.value = if (e is VoiceError) e.message.orEmpty() else "Can't reach ${settings.serverUrl}: ${e.message}"
+            phase.value = Phase.Idle
+            return
+        }
+        said.value = r.transcript
+        reply.value = r.reply + (r.held?.let { "\n\nWaiting for a yes: $it" } ?: "")
+        if (r.conversationId.isNotEmpty()) { conversationId = r.conversationId; conversationAt = System.currentTimeMillis() }
+        r.wav?.let { phase.value = Phase.Speaking; play(app, it) }
+        phase.value = Phase.Idle
+        val asks = r.reply.trimEnd().endsWith("?") || r.held != null
+        if (asks && settings.listenAfterQuestion) listen(app)
+    }
+
+    private fun beep() {
+        runCatching {
+            val t = ToneGenerator(AudioManager.STREAM_MUSIC, 60)
+            t.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
+            Thread.sleep(150)
+            t.release()
+        }
+    }
+
+    private suspend fun play(app: Context, wav: ByteArray) {
+        val f = File(app.cacheDir, "reply.wav")
+        withContext(Dispatchers.IO) { f.writeBytes(wav) }
+        suspendCancellableCoroutine { cont ->
+            val p = MediaPlayer()
+            player = p
+            p.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            p.setDataSource(f.absolutePath)
+            p.setOnCompletionListener { it.release(); if (player === it) player = null; if (cont.isActive) cont.resume(Unit) }
+            p.setOnErrorListener { mp, _, _ -> mp.release(); if (player === mp) player = null; if (cont.isActive) cont.resume(Unit); true }
+            cont.invokeOnCancellation { runCatching { p.release() } }
+            p.prepare()
+            p.start()
+        }
+    }
+}

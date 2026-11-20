@@ -24,5 +24,20 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("listen_after_question", true)
         set(v) = prefs.edit().putBoolean("listen_after_question", v).apply()
 
+    /** Listen for the wake word in a foreground service. */
+    var wakeWordEnabled: Boolean
+        get() = prefs.getBoolean("wake_word", false)
+        set(v) = prefs.edit().putBoolean("wake_word", v).apply()
+
+    /** Probability cutoff; 0 means use the model's own (0.97 for Hey Yossi). Higher is stricter. */
+    var wakeCutoff: Float
+        get() = prefs.getFloat("wake_cutoff", 0f)
+        set(v) = prefs.edit().putFloat("wake_cutoff", v).apply()
+
+    /** Optional folder holding a custom microWakeWord model (`*.json` + `.tflite`); needs all-files access. */
+    var wakeModelFolder: String
+        get() = prefs.getString("wake_folder", "") ?: ""
+        set(v) = prefs.edit().putString("wake_folder", v.trim()).apply()
+
     val configured: Boolean get() = serverUrl.isNotEmpty() && token.isNotEmpty()
 }

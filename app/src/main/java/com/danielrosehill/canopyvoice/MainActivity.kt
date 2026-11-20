@@ -3,12 +3,15 @@ package com.danielrosehill.canopyvoice
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioAttributes
-import android.media.MediaPlayer
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -17,155 +20,83 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import java.io.File
-import kotlin.coroutines.resume
-
-enum class Phase { Idle, Listening, Thinking, Speaking }
+import android.provider.Settings as AndroidSettings
 
 class MainActivity : ComponentActivity() {
     private lateinit var settings: Settings
-    private lateinit var recorder: Recorder
-
-    private var phase by mutableStateOf(Phase.Idle)
-    private var level by mutableIntStateOf(0)
-    private var said by mutableStateOf("")
-    private var reply by mutableStateOf("")
-    private var error by mutableStateOf("")
     private var showSettings by mutableStateOf(false)
-
-    // Follow-ups: the server keeps a conversation for session_ttl_s (180 s by default); stay under it.
-    private var conversationId: String? = null
-    private var conversationAt = 0L
-    private val conversationTtlMs = 170_000L
-
-    private var job: Job? = null
-    private var player: MediaPlayer? = null
+    private var permTick by mutableIntStateOf(0) // bumps on resume so permission rows refresh
 
     private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) listen() else error = "Microphone permission is needed to talk"
+        if (granted) afterMicGranted?.invoke() else Assistant.error.value = "Microphone permission is needed"
+        afterMicGranted = null
     }
+    private var afterMicGranted: (() -> Unit)? = null
+    private val askNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) { permTick++ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
-        recorder = Recorder(this)
         showSettings = !settings.configured
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Surface(Modifier.fillMaxSize()) { Screen() } } }
-        if (settings.configured && settings.listenOnOpen) listen()
+        if (settings.wakeWordEnabled) withMic { WakeWordService.start(this) }
+        onIntent(intent, firstLaunch = true)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // The assistant gesture or the launcher icon while open: start a new turn.
-        if (settings.configured && phase == Phase.Idle) listen()
+        onIntent(intent, firstLaunch = false)
     }
 
-    override fun onStop() {
-        super.onStop()
-        cancel()
+    override fun onResume() {
+        super.onResume()
+        permTick++
     }
 
-    private fun currentConversation(): String? =
-        conversationId?.takeIf { System.currentTimeMillis() - conversationAt < conversationTtlMs }
-
-    private fun cancel() {
-        recorder.requestStop()
-        job?.cancel()
-        job = null
-        player?.release()
-        player = null
-        phase = Phase.Idle
+    private fun onIntent(intent: Intent?, firstLaunch: Boolean) {
+        if (intent?.getBooleanExtra(EXTRA_FROM_WAKE, false) == true) return // the turn is already running
+        val explicit = intent?.getBooleanExtra(EXTRA_LISTEN, false) == true ||
+            intent?.action == Intent.ACTION_ASSIST || intent?.action == Intent.ACTION_VOICE_COMMAND
+        val onOpen = firstLaunch && settings.listenOnOpen
+        if (settings.configured && (explicit || onOpen) && Assistant.phase.value == Phase.Idle) listen()
     }
 
-    fun listen() {
+    private fun withMic(then: () -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) then()
+        else { afterMicGranted = then; askMic.launch(Manifest.permission.RECORD_AUDIO) }
+    }
+
+    private fun listen() {
         if (!settings.configured) { showSettings = true; return }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            askMic.launch(Manifest.permission.RECORD_AUDIO); return
-        }
-        cancel()
-        error = ""
-        job = lifecycleScope.launch {
-            phase = Phase.Listening
-            val audio = try {
-                recorder.record(onLevel = { level = it })
-            } catch (e: Exception) {
-                error = "Recording failed: ${e.message}"; phase = Phase.Idle; return@launch
-            }
-            level = 0
-            if (audio == null) { phase = Phase.Idle; return@launch }
-            phase = Phase.Thinking
-            val client = VoiceClient(settings.serverUrl, settings.token)
-            val result = runCatching { withContext(Dispatchers.IO) { client.audioTurn(audio, currentConversation()) } }
-            handle(result)
-        }
-    }
-
-    fun sendText(text: String) {
-        if (!settings.configured) { showSettings = true; return }
-        cancel()
-        error = ""
-        job = lifecycleScope.launch {
-            phase = Phase.Thinking
-            val client = VoiceClient(settings.serverUrl, settings.token)
-            handle(runCatching { withContext(Dispatchers.IO) { client.textTurn(text, currentConversation()) } })
-        }
-    }
-
-    private suspend fun handle(result: Result<TurnResult>) {
-        val r = result.getOrElse { e ->
-            error = when (e) {
-                is VoiceError -> e.message.orEmpty()
-                else -> "Can't reach ${settings.serverUrl}: ${e.message}"
-            }
-            phase = Phase.Idle
-            return
-        }
-        said = r.transcript
-        reply = r.reply + (r.held?.let { "\n\nWaiting for a yes: $it" } ?: "")
-        if (r.conversationId.isNotEmpty()) { conversationId = r.conversationId; conversationAt = System.currentTimeMillis() }
-        r.wav?.let { phase = Phase.Speaking; play(it) }
-        phase = Phase.Idle
-        val asks = r.reply.trimEnd().endsWith("?") || r.held != null
-        if (asks && settings.listenAfterQuestion) listen()
-    }
-
-    private suspend fun play(wav: ByteArray) {
-        val f = File(cacheDir, "reply.wav")
-        withContext(Dispatchers.IO) { f.writeBytes(wav) }
-        suspendCancellableCoroutine { cont ->
-            val p = MediaPlayer()
-            player = p
-            p.setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            p.setDataSource(f.absolutePath)
-            p.setOnCompletionListener { it.release(); if (player === it) player = null; if (cont.isActive) cont.resume(Unit) }
-            p.setOnErrorListener { mp, _, _ -> mp.release(); if (player === mp) player = null; if (cont.isActive) cont.resume(Unit); true }
-            cont.invokeOnCancellation { runCatching { p.release() } }
-            p.prepare()
-            p.start()
-        }
+        withMic { Assistant.listen(this) }
     }
 
     @Composable
     private fun Screen() {
-        val scroll = rememberScrollState()
+        val phase by Assistant.phase.collectAsState()
+        val level by Assistant.level.collectAsState()
+        val said by Assistant.said.collectAsState()
+        val reply by Assistant.reply.collectAsState()
+        val error by Assistant.error.collectAsState()
+        val wakeOn by Assistant.wakeRunning.collectAsState()
         Column(
-            Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(20.dp).verticalScroll(scroll),
+            Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(20.dp).verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Canopy Voice", fontSize = 22.sp, modifier = Modifier.weight(1f))
+                Image(painterResource(R.drawable.yossi_mascot), contentDescription = null,
+                    modifier = Modifier.size(40.dp).clip(CircleShape))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Yossi", fontSize = 22.sp)
+                    if (wakeOn) Text("Listening for “Hey Yossi”", style = MaterialTheme.typography.bodySmall)
+                }
                 TextButton(onClick = { showSettings = !showSettings }) { Text(if (showSettings) "Done" else "Settings") }
             }
             if (showSettings) SettingsPanel()
@@ -182,18 +113,19 @@ class MainActivity : ComponentActivity() {
                 onClick = {
                     when (phase) {
                         Phase.Idle -> listen()
-                        Phase.Listening -> recorder.requestStop()
-                        else -> cancel()
+                        Phase.Listening -> Assistant.stopRecording()
+                        else -> Assistant.cancel()
                     }
                 },
                 shape = CircleShape,
                 modifier = Modifier.size((180 + grow).dp),
             ) { Text(label, fontSize = 24.sp) }
 
-            if (currentConversation() != null) {
-                TextButton(onClick = { conversationId = null }) { Text("New conversation") }
+            if (Assistant.currentConversation() != null && phase == Phase.Idle) {
+                TextButton(onClick = { Assistant.newConversation(); Assistant.said.value = ""; Assistant.reply.value = "" }) {
+                    Text("New conversation")
+                }
             }
-
             if (error.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
                 Text(error, color = MaterialTheme.colorScheme.error)
@@ -205,7 +137,7 @@ class MainActivity : ComponentActivity() {
             }
             if (reply.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
-                Text("Reply", style = MaterialTheme.typography.labelMedium, modifier = Modifier.fillMaxWidth())
+                Text("Yossi", style = MaterialTheme.typography.labelMedium, modifier = Modifier.fillMaxWidth())
                 Text(reply, fontSize = 18.sp, modifier = Modifier.fillMaxWidth())
             }
 
@@ -214,7 +146,8 @@ class MainActivity : ComponentActivity() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(typed, { typed = it }, label = { Text("Or type") }, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { if (typed.isNotBlank()) { sendText(typed); typed = "" } }, enabled = phase == Phase.Idle) { Text("Send") }
+                Button(onClick = { if (typed.isNotBlank()) { Assistant.sendText(this@MainActivity, typed); typed = "" } },
+                    enabled = phase == Phase.Idle) { Text("Send") }
             }
         }
     }
@@ -225,19 +158,82 @@ class MainActivity : ComponentActivity() {
         var token by remember { mutableStateOf(settings.token) }
         var onOpen by remember { mutableStateOf(settings.listenOnOpen) }
         var afterQ by remember { mutableStateOf(settings.listenAfterQuestion) }
+        var wake by remember { mutableStateOf(settings.wakeWordEnabled) }
+        var cutoff by remember { mutableFloatStateOf(settings.wakeCutoff.takeIf { it > 0f } ?: 0.97f) }
+        var folder by remember { mutableStateOf(settings.wakeModelFolder) }
+        val wakeLevel by Assistant.wakeLevel.collectAsState()
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             OutlinedTextField(url, { url = it; settings.serverUrl = it }, label = { Text("Server, e.g. http://10.0.0.2:8797") },
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(token, { token = it; settings.token = it }, label = { Text("Speaker token") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(onOpen, { onOpen = it; settings.listenOnOpen = it }); Spacer(Modifier.width(8.dp)); Text("Listen when opened")
+            SwitchRow("Listen when opened", onOpen) { onOpen = it; settings.listenOnOpen = it }
+            SwitchRow("Listen again after a question", afterQ) { afterQ = it; settings.listenAfterQuestion = it }
+
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            SwitchRow("Wake word “Hey Yossi” (on the phone)", wake) { on ->
+                wake = on; settings.wakeWordEnabled = on
+                if (on) withMic { WakeWordService.start(this@MainActivity) } else WakeWordService.stop(this@MainActivity)
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(afterQ, { afterQ = it; settings.listenAfterQuestion = it }); Spacer(Modifier.width(8.dp)); Text("Listen again after a question")
-            }
-            Text("Opening the app starts a turn. Put it on the home screen for one-tap talk.",
+            Text("Strictness ${"%.3f".format(cutoff)} (higher means fewer false wakes) · now ${"%.2f".format(wakeLevel)}",
                 style = MaterialTheme.typography.bodySmall)
+            Slider(cutoff, { cutoff = it }, valueRange = 0.80f..0.995f,
+                onValueChangeFinished = {
+                    settings.wakeCutoff = cutoff
+                    if (wake) { WakeWordService.stop(this@MainActivity); WakeWordService.start(this@MainActivity) }
+                })
+            OutlinedTextField(folder, { folder = it; settings.wakeModelFolder = it },
+                label = { Text("Custom wake word folder (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Text("Permissions", style = MaterialTheme.typography.titleSmall)
+            permTick // read so the rows recompose on resume
+            PermissionRow("Microphone",
+                ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                withMic { permTick++ }
+            }
+            if (Build.VERSION.SDK_INT >= 33) PermissionRow("Notifications (wake word status)",
+                ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            PermissionRow("Display over other apps (wake word opens Yossi)", AndroidSettings.canDrawOverlays(this@MainActivity)) {
+                startActivity(Intent(AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            }
+            PermissionRow("All files access (custom wake word folder)", Environment.isExternalStorageManager()) {
+                startActivity(Intent(AndroidSettings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
+            }
+            val pm = getSystemService(PowerManager::class.java)
+            PermissionRow("Unrestricted battery (keeps the wake word alive)", pm.isIgnoringBatteryOptimizations(packageName)) {
+                @Suppress("BatteryLife")
+                startActivity(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            }
+            PermissionRow("Default digital assistant (assist gesture opens Yossi)", isDefaultAssistant()) {
+                startActivity(Intent(AndroidSettings.ACTION_VOICE_INPUT_SETTINGS))
+            }
         }
+    }
+
+    private fun isDefaultAssistant(): Boolean =
+        AndroidSettings.Secure.getString(contentResolver, "assistant")?.startsWith("$packageName/") == true
+
+    @Composable
+    private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked, onChange); Spacer(Modifier.width(8.dp)); Text(label)
+        }
+    }
+
+    @Composable
+    private fun PermissionRow(label: String, granted: Boolean, grant: () -> Unit) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text((if (granted) "✓ " else "• ") + label, modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium)
+            if (!granted) TextButton(onClick = grant) { Text("Grant") }
+        }
+    }
+
+    companion object {
+        const val EXTRA_LISTEN = "listen"
+        const val EXTRA_FROM_WAKE = "from_wake"
     }
 }

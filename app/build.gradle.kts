@@ -44,6 +44,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    // The wake word model is memory-mapped by size; keep it uncompressed.
+    androidResources { noCompress += "tflite" }
 }
 
 dependencies {
@@ -55,4 +57,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    // microWakeWord: TFLite runtime (LiteRT) and the native audio frontend (module microfeatures, from Ava).
+    implementation("com.google.ai.edge.litert:litert:1.4.1")
+    implementation(project(":microfeatures"))
 }

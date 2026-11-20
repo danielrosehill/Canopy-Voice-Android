@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "CanopyVoice"
-include(":app")
+include(":app", ":microfeatures")
