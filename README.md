@@ -1,6 +1,8 @@
-# Canopy Voice for Android
+# Yossi for Android
 
-A thin Android client for [`canopy-voice`](https://github.com/danielrosehill/Canopy/blob/main/docs/voice.md),
+<img src="art/yossi-512.png" width="128" align="right" alt="Yossi the anteater">
+
+**Yossi** (the anteater) is a thin Android client for [`canopy-voice`](https://github.com/danielrosehill/Canopy/blob/main/docs/voice.md),
 the Pipecat voice front end of Canopy. Tap (or just open the app), speak, hear the reply. The server does
 speech-to-text, the Claude tool loop over your Canopy tool group, and text-to-speech; the phone only records and
 plays.
@@ -32,9 +34,43 @@ and `held` is only shown for typed turns.
 
 Plain HTTP is allowed (`usesCleartextTraffic`), because the server normally sits on a LAN or tailnet.
 
+## Wake word (v1.1)
+
+"Hey Yossi" is detected **on the phone** with [microWakeWord](https://github.com/kahrendt/microWakeWord):
+the bundled model is `app/src/main/assets/wakeword/hey_yossi.tflite` + `.json`, the micro model from
+[`danielrosehill/Hey-Yossi-microWakeWord`](https://huggingface.co/danielrosehill/Hey-Yossi-microWakeWord)
+(v1, trained 2026-10-29, CC BY-NC 4.0, cutoff 0.97, window 5). Only audio after a detection leaves the phone.
+
+- Settings > **Wake word** starts `WakeWordService`, a microphone foreground service with a notification
+  (Stop is on the notification). It has to be switched on from the open app: Android refuses to start a
+  microphone service from the background or at boot.
+- **Strictness** sets the probability cutoff (0.80 to 0.995); the readout beside it is the live smoothed score.
+- **Custom wake word folder**: a folder with any micro-wake-word-models v2 manifest (`type: micro`) and its
+  `.tflite`, for example an ESPHome model. Needs all-files access.
+- Pipeline: `AudioRecord` 16 kHz PCM16 → TFLite Micro frontend (40 features per 10 ms, native, module
+  `microfeatures`) → streaming model via LiteRT 1.4.1. Frontend and detector are adapted from
+  [brownard/Ava](https://github.com/brownard/Ava) (Apache-2.0, commit `2c76f51`); see `microfeatures/README.md`.
+
+## Digital assistant
+
+The app implements Android's assistant framework (`VoiceInteractionService`, session service, a stub
+recognition service), so it can be chosen in Settings > Apps > Default apps > **Digital assistant app**. The
+assist gesture (long-press power or home, corner swipe) then opens Yossi listening, also from the lock screen.
+
+## Permissions
+
+Distributed through F-Droid, so it asks for what it can use. Each has a Grant row in Settings.
+
+| Permission | Why |
+|---|---|
+| Microphone | turns and the wake word |
+| Notifications | the wake word service's status notification |
+| Display over other apps | lets a wake word bring Yossi's screen up from the background |
+| All files access | custom wake word folder anywhere on the phone |
+| Unrestricted battery | stops the system killing the wake word service |
+
 ## Not yet
 
-- On-device wake word (openWakeWord ONNX, e.g. `hey_yossi`). v1.0 is tap or open to talk.
 - Streaming (Pipecat WebRTC/WebSocket transports), barge-in.
 
 ## Build and release

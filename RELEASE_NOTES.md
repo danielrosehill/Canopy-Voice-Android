@@ -1,2 +1,3 @@
-Tap or open to talk to a canopy-voice server: records until you stop speaking, plays the spoken reply, keeps
-follow-ups in one conversation, listens again after a question, and accepts typed turns.
+Yossi (the anteater) now listens for "Hey Yossi" on the phone (microWakeWord, switch it on in Settings), can be
+set as the phone's digital assistant so the assist gesture opens it, and has Grant rows for the wider
+permissions: display over other apps, all files access, notifications and unrestricted battery.
