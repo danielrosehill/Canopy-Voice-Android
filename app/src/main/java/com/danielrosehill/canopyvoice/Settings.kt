@@ -14,6 +14,17 @@ class Settings(context: Context) {
         get() = prefs.getString("token", "") ?: ""
         set(v) = prefs.edit().putString("token", v.trim()).apply()
 
+    /** Optional Cloudflare Access service token, for a server published through a Cloudflare tunnel. */
+    var cfClientId: String
+        get() = prefs.getString("cf_client_id", "") ?: ""
+        set(v) = prefs.edit().putString("cf_client_id", v.trim()).apply()
+
+    var cfClientSecret: String
+        get() = prefs.getString("cf_client_secret", "") ?: ""
+        set(v) = prefs.edit().putString("cf_client_secret", v.trim()).apply()
+
+    fun client() = VoiceClient(serverUrl, token, cfClientId, cfClientSecret)
+
     /** Start listening as soon as the app (or the assistant gesture) opens it. */
     var listenOnOpen: Boolean
         get() = prefs.getBoolean("listen_on_open", true)

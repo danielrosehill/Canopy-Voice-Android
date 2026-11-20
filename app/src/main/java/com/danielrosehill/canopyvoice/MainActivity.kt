@@ -156,6 +156,8 @@ class MainActivity : ComponentActivity() {
     private fun SettingsPanel() {
         var url by remember { mutableStateOf(settings.serverUrl) }
         var token by remember { mutableStateOf(settings.token) }
+        var cfId by remember { mutableStateOf(settings.cfClientId) }
+        var cfSecret by remember { mutableStateOf(settings.cfClientSecret) }
         var onOpen by remember { mutableStateOf(settings.listenOnOpen) }
         var afterQ by remember { mutableStateOf(settings.listenAfterQuestion) }
         var wake by remember { mutableStateOf(settings.wakeWordEnabled) }
@@ -166,6 +168,12 @@ class MainActivity : ComponentActivity() {
             OutlinedTextField(url, { url = it; settings.serverUrl = it }, label = { Text("Server, e.g. http://10.0.0.2:8797") },
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(token, { token = it; settings.token = it }, label = { Text("Speaker token") },
+                singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            Text("Cloudflare Access service token (optional, for an https server behind Cloudflare Access)",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+            OutlinedTextField(cfId, { cfId = it; settings.cfClientId = it }, label = { Text("CF-Access-Client-Id") },
+                singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(cfSecret, { cfSecret = it; settings.cfClientSecret = it }, label = { Text("CF-Access-Client-Secret") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             SwitchRow("Listen when opened", onOpen) { onOpen = it; settings.listenOnOpen = it }
             SwitchRow("Listen again after a question", afterQ) { afterQ = it; settings.listenAfterQuestion = it }

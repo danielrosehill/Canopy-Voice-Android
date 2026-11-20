@@ -12,6 +12,9 @@ plays.
 1. Install from the F-Droid repo you publish it to, or the APK on the [releases](../../releases) page.
 2. Open it, tap **Settings**, enter the server (for example `http://10.0.0.2:8797`, or a tailnet address off the
    LAN) and your speaker token (`VOICE_TOKEN_<NAME>` in the server's `secrets.env`). Nothing personal is built in.
+   For a server published through a Cloudflare tunnel behind **Cloudflare Access**, also enter a service token's
+   `CF-Access-Client-Id` and `CF-Access-Client-Secret` (v1.2); the app then sends them on every request. Leave
+   both empty on a LAN or tailnet.
 3. Opening the app starts listening. It stops on its own after about 1.2 s of silence, or tap the button.
 
 - **Follow-ups:** the app sends back `conversation_id` for 170 s, under the server's `session_ttl_s` (180 s), so
@@ -28,7 +31,9 @@ plays.
 | Voice | `POST /v1/turn/audio`, multipart `audio` (AAC/M4A, 16 kHz mono), `conversation_id`?, `reply=wav` | WAV body; `X-Transcript`, `X-Reply-Text`, `X-Conversation-Id` headers (URL-encoded) |
 | Text | `POST /v1/turn` JSON `{text, conversation_id?, speak: true}` | `reply`, `conversation_id`, `held`, `audio_b64` |
 
-`Authorization: Bearer <speaker token>` on both. A 422 from the audio route means the server heard nothing.
+`Authorization: Bearer <speaker token>` on both, plus `CF-Access-Client-Id` / `CF-Access-Client-Secret` when
+both are set (Access app with a Service Auth policy: a missing or wrong token gets a 403 from Cloudflare before the
+request reaches the server). A 422 from the audio route means the server heard nothing.
 The audio route's `reply=json` mode carries no audio (canopy-voice as of 2026-11-20), so voice turns use WAV
 and `held` is only shown for typed turns.
 

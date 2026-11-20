@@ -19,7 +19,12 @@ data class TurnResult(
 class VoiceError(message: String) : Exception(message)
 
 /** Client for canopy-voice (Canopy docs/voice.md): POST /v1/turn/audio and POST /v1/turn. Blocking; call off the main thread. */
-class VoiceClient(private val baseUrl: String, private val token: String) {
+class VoiceClient(
+    private val baseUrl: String,
+    private val token: String,
+    private val cfClientId: String = "",
+    private val cfClientSecret: String = "",
+) {
 
     private fun open(path: String): HttpURLConnection =
         (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
@@ -28,6 +33,10 @@ class VoiceClient(private val baseUrl: String, private val token: String) {
             connectTimeout = 8000
             readTimeout = 60000
             setRequestProperty("Authorization", "Bearer $token")
+            if (cfClientId.isNotEmpty() && cfClientSecret.isNotEmpty()) {
+                setRequestProperty("CF-Access-Client-Id", cfClientId)
+                setRequestProperty("CF-Access-Client-Secret", cfClientSecret)
+            }
         }
 
     private fun check(c: HttpURLConnection) {

@@ -84,7 +84,7 @@ object Assistant {
             }
             if (audio == null) { phase.value = Phase.Idle; return@launch }
             phase.value = Phase.Thinking
-            val client = VoiceClient(settings.serverUrl, settings.token)
+            val client = settings.client()
             handle(app, settings, runCatching { withContext(Dispatchers.IO) { client.audioTurn(audio, currentConversation()) } })
         }
     }
@@ -97,7 +97,7 @@ object Assistant {
         error.value = ""
         phase.value = Phase.Thinking
         job = scope.launch {
-            val client = VoiceClient(settings.serverUrl, settings.token)
+            val client = settings.client()
             handle(app, settings, runCatching { withContext(Dispatchers.IO) { client.textTurn(text, currentConversation()) } })
         }
     }
