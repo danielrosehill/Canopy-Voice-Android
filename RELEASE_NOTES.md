@@ -1,3 +1,4 @@
-Yossi (the anteater) now listens for "Hey Yossi" on the phone (microWakeWord, switch it on in Settings), can be
-set as the phone's digital assistant so the assist gesture opens it, and has Grant rows for the wider
-permissions: display over other apps, all files access, notifications and unrestricted battery.
+One switch to stop and start listening. "Listening on / paused" sits on the main screen, as a Quick Settings
+tile ("Yossi") and as **Pause listening** on the wake word notification. Paused, Yossi never opens the
+microphone by itself (no listening on open, none after a question, wake word off); Talk, typing and the assist
+gesture still work. It survives restarts and leaves your other settings as they were.

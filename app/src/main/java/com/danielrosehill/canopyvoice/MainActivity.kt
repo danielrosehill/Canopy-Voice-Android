@@ -45,7 +45,8 @@ class MainActivity : ComponentActivity() {
         settings = Settings(this)
         showSettings = !settings.configured
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Surface(Modifier.fillMaxSize()) { Screen() } } }
-        if (settings.wakeWordEnabled) withMic { WakeWordService.start(this) }
+        Assistant.syncPaused(this)
+        if (settings.wakeWordEnabled && !settings.listeningPaused) withMic { WakeWordService.start(this) }
         onIntent(intent, firstLaunch = true)
     }
 
@@ -57,13 +58,20 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         permTick++
+        Assistant.syncPaused(this)
+        // Resuming from the Quick Settings tile opens the app so the wake word service may start (foreground only).
+        if (settings.wakeWordEnabled && !settings.listeningPaused && !Assistant.wakeRunning.value &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) WakeWordService.start(this)
     }
 
     private fun onIntent(intent: Intent?, firstLaunch: Boolean) {
         if (intent?.getBooleanExtra(EXTRA_FROM_WAKE, false) == true) return // the turn is already running
+        if (intent?.getBooleanExtra(EXTRA_NO_LISTEN, false) == true) return // opened by the tile to resume
         val explicit = intent?.getBooleanExtra(EXTRA_LISTEN, false) == true ||
             intent?.action == Intent.ACTION_ASSIST || intent?.action == Intent.ACTION_VOICE_COMMAND
-        val onOpen = firstLaunch && settings.listenOnOpen
+        // Paused: no listening on open; an explicit request (assist gesture, headset button) still listens.
+        val onOpen = firstLaunch && settings.listenOnOpen && !settings.listeningPaused
         if (settings.configured && (explicit || onOpen) && Assistant.phase.value == Phase.Idle) listen()
     }
 
@@ -85,6 +93,7 @@ class MainActivity : ComponentActivity() {
         val reply by Assistant.reply.collectAsState()
         val error by Assistant.error.collectAsState()
         val wakeOn by Assistant.wakeRunning.collectAsState()
+        val paused by Assistant.paused.collectAsState()
         Column(
             Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(20.dp).verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -95,11 +104,15 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text("Yossi", fontSize = 22.sp)
-                    if (wakeOn) Text("Listening for “Hey Yossi”", style = MaterialTheme.typography.bodySmall)
+                    if (paused) Text("Listening paused", style = MaterialTheme.typography.bodySmall)
+                    else if (wakeOn) Text("Listening for “Hey Yossi”", style = MaterialTheme.typography.bodySmall)
                 }
                 TextButton(onClick = { showSettings = !showSettings }) { Text(if (showSettings) "Done" else "Settings") }
             }
             if (showSettings) SettingsPanel()
+
+            Spacer(Modifier.height(16.dp))
+            ListeningToggle(paused)
 
             Spacer(Modifier.height(32.dp))
             val label = when (phase) {
@@ -181,14 +194,17 @@ class MainActivity : ComponentActivity() {
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             SwitchRow("Wake word “Hey Yossi” (on the phone)", wake) { on ->
                 wake = on; settings.wakeWordEnabled = on
-                if (on) withMic { WakeWordService.start(this@MainActivity) } else WakeWordService.stop(this@MainActivity)
+                if (on && !settings.listeningPaused) withMic { WakeWordService.start(this@MainActivity) }
+                else if (!on) WakeWordService.stop(this@MainActivity)
             }
             Text("Strictness ${"%.3f".format(cutoff)} (higher means fewer false wakes) · now ${"%.2f".format(wakeLevel)}",
                 style = MaterialTheme.typography.bodySmall)
             Slider(cutoff, { cutoff = it }, valueRange = 0.80f..0.995f,
                 onValueChangeFinished = {
                     settings.wakeCutoff = cutoff
-                    if (wake) { WakeWordService.stop(this@MainActivity); WakeWordService.start(this@MainActivity) }
+                    if (wake && !settings.listeningPaused) {
+                        WakeWordService.stop(this@MainActivity); WakeWordService.start(this@MainActivity)
+                    }
                 })
             OutlinedTextField(folder, { folder = it; settings.wakeModelFolder = it },
                 label = { Text("Custom wake word folder (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -221,6 +237,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The one listening on/off: pauses listen-on-open, listening again after a question and the wake word. */
+    @Composable
+    private fun ListeningToggle(paused: Boolean) {
+        val toggle = { pause: Boolean ->
+            if (pause) Assistant.setPaused(this, true) else withMic { Assistant.setPaused(this, false) }
+        }
+        Surface(
+            onClick = { toggle(!paused) },
+            shape = MaterialTheme.shapes.large,
+            color = if (paused) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (paused) "Listening paused" else "Listening on", fontSize = 18.sp)
+                    Text(
+                        if (paused) "Yossi only listens when you tap Talk" else "Hands-free: on open, after questions, wake word",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = !paused, onCheckedChange = { on -> toggle(!on) })
+            }
+        }
+    }
+
     private fun isDefaultAssistant(): Boolean =
         AndroidSettings.Secure.getString(contentResolver, "assistant")?.startsWith("$packageName/") == true
 
@@ -243,5 +284,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_LISTEN = "listen"
         const val EXTRA_FROM_WAKE = "from_wake"
+        const val EXTRA_NO_LISTEN = "no_listen"
     }
 }

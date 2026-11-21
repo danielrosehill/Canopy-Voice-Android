@@ -20,6 +20,7 @@ import com.danielrosehill.canopyvoice.wakeword.MicroWakeWordDetector
 import com.danielrosehill.canopyvoice.wakeword.WakeWordModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
@@ -37,12 +38,19 @@ import java.nio.ByteOrder
  */
 class WakeWordService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var loop: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            Settings(this).wakeWordEnabled = false
+        if (intent?.action == ACTION_PAUSE) {
+            // The notification's Pause: the same master switch as the screen and the Quick Settings tile.
+            Assistant.setPaused(this, true)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val settings = Settings(this)
+        if (settings.listeningPaused || !settings.wakeWordEnabled) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -55,7 +63,8 @@ class WakeWordService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (!Assistant.wakeRunning.value) scope.launch { run() }
+        // onStartCommand runs on the main thread, so this check cannot race a second start.
+        if (loop?.isActive != true) loop = scope.launch { run() }
         return START_STICKY
     }
 
@@ -136,14 +145,14 @@ class WakeWordService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Wake word", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val stop = PendingIntent.getService(this, 1, Intent(this, WakeWordService::class.java).setAction(ACTION_STOP),
+        val pause = PendingIntent.getService(this, 1, Intent(this, WakeWordService::class.java).setAction(ACTION_PAUSE),
             PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_yossi)
             .setContentTitle("Listening for “Hey Yossi”")
             .setContentIntent(open)
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Stop", stop).build())
+            .addAction(Notification.Action.Builder(null, "Pause listening", pause).build())
             .build()
     }
 
@@ -153,7 +162,7 @@ class WakeWordService : Service() {
         private const val NOTE_ID = 1
         private const val RATE = 16000
         private const val CHUNK_BYTES = 1280 // 40 ms
-        const val ACTION_STOP = "com.danielrosehill.canopyvoice.STOP_WAKE"
+        const val ACTION_PAUSE = "com.danielrosehill.canopyvoice.PAUSE_LISTENING"
 
         fun start(context: Context) =
             ContextCompat.startForegroundService(context, Intent(context, WakeWordService::class.java))

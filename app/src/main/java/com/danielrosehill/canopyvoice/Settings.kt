@@ -35,6 +35,15 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("listen_after_question", true)
         set(v) = prefs.edit().putBoolean("listen_after_question", v).apply()
 
+    /**
+     * Master off switch for hands-free listening: while true the app never starts the microphone by itself
+     * (no listen-on-open, no listening again after a question, no wake word service). Tapping Talk, typing and
+     * the assist gesture still work. The individual settings below are left as they are, so resuming restores them.
+     */
+    var listeningPaused: Boolean
+        get() = prefs.getBoolean("listening_paused", false)
+        set(v) = prefs.edit().putBoolean("listening_paused", v).apply()
+
     /** Listen for the wake word in a foreground service. */
     var wakeWordEnabled: Boolean
         get() = prefs.getBoolean("wake_word", false)

@@ -1,10 +1,12 @@
 package com.danielrosehill.canopyvoice
 
+import android.content.ComponentName
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
+import android.service.quicksettings.TileService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,6 +35,8 @@ object Assistant {
     /** Smoothed wake word probability, for the readout in Settings. */
     val wakeLevel = MutableStateFlow(0f)
     val wakeRunning = MutableStateFlow(false)
+    /** Mirrors [Settings.listeningPaused] for the screen; refreshed by [syncPaused]. */
+    val paused = MutableStateFlow(false)
 
     val mic = Mutex()
 
@@ -45,6 +49,28 @@ object Assistant {
     private var conversationId: String? = null
     private var conversationAt = 0L
     private const val TTL_MS = 170_000L
+
+    fun syncPaused(context: Context) { paused.value = Settings(context).listeningPaused }
+
+    /**
+     * The one listening on/off, used by the screen, the Quick Settings tile and the wake word notification.
+     * Pausing stops the wake word service and any recording in progress; resuming starts the wake word service
+     * again if it is switched on in Settings. Android only lets a microphone service start while the app is in
+     * the foreground, so callers outside the open app (the tile) open [MainActivity] to resume it.
+     */
+    fun setPaused(context: Context, pause: Boolean) {
+        val app = context.applicationContext
+        val settings = Settings(app)
+        settings.listeningPaused = pause
+        paused.value = pause
+        if (pause) {
+            if (phase.value == Phase.Listening) cancel()
+            WakeWordService.stop(app)
+        } else if (settings.wakeWordEnabled && !wakeRunning.value) {
+            runCatching { WakeWordService.start(app) }
+        }
+        runCatching { TileService.requestListeningState(app, ComponentName(app, ListeningTileService::class.java)) }
+    }
 
     fun currentConversation(): String? =
         conversationId?.takeIf { System.currentTimeMillis() - conversationAt < TTL_MS }
@@ -114,7 +140,7 @@ object Assistant {
         r.wav?.let { phase.value = Phase.Speaking; play(app, it) }
         phase.value = Phase.Idle
         val asks = r.reply.trimEnd().endsWith("?") || r.held != null
-        if (asks && settings.listenAfterQuestion) listen(app)
+        if (asks && settings.listenAfterQuestion && !settings.listeningPaused) listen(app)
     }
 
     private fun beep() {

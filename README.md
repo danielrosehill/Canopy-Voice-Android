@@ -17,6 +17,15 @@ plays.
    both empty on a LAN or tailnet.
 3. Opening the app starts listening. It stops on its own after about 1.2 s of silence, or tap the button.
 
+- **Listening on / paused (v1.3):** one switch for all hands-free listening, so you don't have to flip the
+  separate settings. It is on the main screen under the title, as a Quick Settings tile ("Yossi": edit your
+  Quick Settings panel and drag it in), and as **Pause listening** on the wake word notification. Paused means
+  the app never opens the microphone by itself: no listening when opened, no listening again after a question,
+  and the wake word service stops. **Talk**, typing and the assist gesture still work while paused (each is an
+  explicit request). The choice survives restarts, and the separate settings are kept, so resuming brings back
+  whatever they were. Resuming from the tile with the wake word on opens the app, because Android only lets a
+  microphone service start while the app is in the foreground.
+
 - **Follow-ups:** the app sends back `conversation_id` for 170 s, under the server's `session_ttl_s` (180 s), so
   "and tomorrow?" works. **New conversation** drops it.
 - **Questions and confirmations:** when a reply ends in a question (canopy-voice reads a held action back and asks
@@ -47,7 +56,8 @@ the bundled model is `app/src/main/assets/wakeword/hey_yossi.tflite` + `.json`, 
 (v1, trained 2026-10-29, CC BY-NC 4.0, cutoff 0.97, window 5). Only audio after a detection leaves the phone.
 
 - Settings > **Wake word** starts `WakeWordService`, a microphone foreground service with a notification
-  (Stop is on the notification). It has to be switched on from the open app: Android refuses to start a
+  (**Pause listening** on the notification pauses all hands-free listening, see Use; the wake word setting itself
+  stays on, so resuming restarts the service). It has to be switched on from the open app: Android refuses to start a
   microphone service from the background or at boot.
 - **Strictness** sets the probability cutoff (0.80 to 0.995); the readout beside it is the live smoothed score.
 - **Custom wake word folder**: a folder with any micro-wake-word-models v2 manifest (`type: micro`) and its
