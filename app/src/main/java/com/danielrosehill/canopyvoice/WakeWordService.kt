@@ -9,20 +9,25 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.danielrosehill.canopyvoice.wakeword.MicroWakeWordDetector
+import com.danielrosehill.canopyvoice.wakeword.OpenWakeWordVerifier
 import com.danielrosehill.canopyvoice.wakeword.WakeWordModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -35,6 +40,15 @@ import java.nio.ByteOrder
 /**
  * Listens for the wake word on the phone (microWakeWord, 16 kHz PCM16) in a microphone foreground service.
  * Only audio after a detection leaves the phone. While a turn runs, the microphone is handed to [Assistant].
+ *
+ * False wakes (v1.4): a microWakeWord hit is held for 0.3 s more audio, then the last 3.3 s are scored by a second,
+ * independently trained model ([OpenWakeWordVerifier], openWakeWord `hey_yossi` v1); below
+ * [Settings.verifyThreshold] the wake is dropped (mode enforce) or only logged (shadow). Each checked wake is saved
+ * by [WakeClips] for retraining.
+ *
+ * Sharing the mic (v1.4): while any other app records ([OtherRecordings]), the loop releases its AudioRecord and
+ * waits; it records from the built-in mic only, so a USB mic stays free for other apps. No wake lock: the blocking
+ * AudioRecord.read in a microphone foreground service keeps the loop running with the screen off.
  */
 class WakeWordService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -90,30 +104,81 @@ class WakeWordService : Service() {
         val settings = Settings(this)
         val model = loadModel(settings)
         val detector: MicroWakeWordDetector = model.detector(settings.wakeCutoff.takeIf { it > 0f })
-        Log.i(TAG, "listening for '${model.wakeWord}', cutoff ${settings.wakeCutoff.takeIf { it > 0f } ?: model.cutoff}")
+        val mode = settings.verifyMode
+        val threshold = settings.verifyThreshold
+        val verifier = if (mode == Settings.VERIFY_OFF) null
+            else runCatching { OpenWakeWordVerifier.bundled(this) }
+                .onFailure { Log.e(TAG, "second-stage check unavailable, wakes go through unchecked", it) }.getOrNull()
+        Log.i(TAG, "listening for '${model.wakeWord}', cutoff ${settings.wakeCutoff.takeIf { it > 0f } ?: model.cutoff}, " +
+            "check $mode${if (verifier != null) " >= $threshold" else " (none)"}")
         val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val chunk = ByteBuffer.allocateDirect(CHUNK_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+        val ring = PcmRing(RING_SAMPLES)
+        val audio = getSystemService(AudioManager::class.java)
+        val others = OtherRecordings(audio)
         try {
             while (scope.isActive) {
                 Assistant.phase.first { it == Phase.Idle }
+                if (others.busy.value) {
+                    // Another app is recording (e.g. a voice clip on a USB mic): stay off the microphone entirely.
+                    Log.i(TAG, "another app is recording (${others.describe}); wake word paused")
+                    Assistant.wakeLevel.value = 0f
+                    others.busy.first { !it }
+                    Log.i(TAG, "other recording ended; wake word resumes")
+                    continue
+                }
                 var heard = false
                 Assistant.mic.withLock {
                     val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, CHUNK_BYTES * 4))
+                    // Wake listening stays on the phone's own mic; a USB mic is left to the apps that want it.
+                    builtInMic(audio)?.let { rec.setPreferredDevice(it) }
+                    // Before startRecording, so our own recording is never mistaken for another app's.
+                    others.ownSession = rec.audioSessionId
                     try {
                         rec.startRecording()
                         detector.reset()
+                        ring.clear()
+                        var post = -1        // samples of post-roll still to read after a first-stage hit, -1 = none
+                        var ignore = 0       // samples to ignore after a rejected wake (refractory)
+                        var mwwAtHit = 0f
+                        var errors = 0
                         while (scope.isActive && Assistant.phase.value == Phase.Idle) {
+                            if (others.busy.value) break // yield the mic; the outer loop waits
                             chunk.clear()
                             val n = rec.read(chunk, CHUNK_BYTES)
-                            if (n <= 0) continue
+                            if (n <= 0) {
+                                // Dead or invalidated recorder: back off instead of spinning, then rebuild it.
+                                Log.w(TAG, "AudioRecord.read returned $n")
+                                if (++errors >= 5) break
+                                delay(200); continue
+                            }
+                            errors = 0
                             chunk.limit(n)
-                            if (detector.detect(chunk)) { heard = true; break }
+                            ring.write(chunk.duplicate().order(ByteOrder.LITTLE_ENDIAN))
+                            val samples = n / 2
+                            if (post >= 0) {
+                                post -= samples
+                                if (post <= 0) {
+                                    post = -1
+                                    if (verifyWake(verifier!!, ring, mode, threshold, mwwAtHit, settings)) { heard = true; break }
+                                    detector.reset(); ignore = REFRACTORY_SAMPLES
+                                }
+                                continue
+                            }
+                            val hit = detector.detect(chunk)
                             Assistant.wakeLevel.value = detector.lastAverage
+                            if (ignore > 0) { ignore -= samples; continue }
+                            if (hit) {
+                                mwwAtHit = detector.lastAverage
+                                if (verifier == null) { heard = true; break }
+                                post = POST_SAMPLES
+                            }
                         }
                     } finally {
                         runCatching { rec.stop() }
                         rec.release()
+                        others.ownSession = 0
                     }
                 }
                 if (heard) {
@@ -124,10 +189,31 @@ class WakeWordService : Service() {
                 }
             }
         } finally {
+            others.close()
             detector.close()
+            verifier?.close()
             Assistant.wakeRunning.value = false
         }
     }
+
+    /** Second stage: score the last few seconds; true = let the wake through. Saves the clip either way. */
+    private fun verifyWake(verifier: OpenWakeWordVerifier, ring: PcmRing, mode: String, threshold: Float, mww: Float,
+                      settings: Settings): Boolean {
+        val pcm = ring.snapshot()
+        val t0 = SystemClock.elapsedRealtime()
+        val score = runCatching { verifier.score(pcm) }.getOrElse {
+            Log.e(TAG, "second-stage check failed; letting the wake through", it); return true
+        }
+        val ms = SystemClock.elapsedRealtime() - t0
+        val ok = score >= threshold
+        Log.i(TAG, "wake: check %.3f (threshold %.2f, %s) -> %s, %d ms".format(score, threshold, mode,
+            if (ok) "accept" else if (mode == Settings.VERIFY_ENFORCE) "REJECT" else "would reject", ms))
+        if (settings.saveWakeClips) WakeClips.save(this, pcm, ok, score, threshold, mode, mww, ms, settings.clipSpeakerLabel)
+        return ok || mode != Settings.VERIFY_ENFORCE
+    }
+
+    private fun builtInMic(audio: AudioManager): AudioDeviceInfo? =
+        audio.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
 
     private fun onWake() {
         Assistant.listen(this, chime = true)
@@ -162,6 +248,9 @@ class WakeWordService : Service() {
         private const val NOTE_ID = 1
         private const val RATE = 16000
         private const val CHUNK_BYTES = 1280 // 40 ms
+        private const val POST_SAMPLES = RATE * 3 / 10        // 0.3 s more audio after microWakeWord fires
+        private const val RING_SAMPLES = RATE * 33 / 10       // last 3 s + the post-roll
+        private const val REFRACTORY_SAMPLES = RATE           // 1 s without first-stage hits after a rejection
         const val ACTION_PAUSE = "com.danielrosehill.canopyvoice.PAUSE_LISTENING"
 
         fun start(context: Context) =

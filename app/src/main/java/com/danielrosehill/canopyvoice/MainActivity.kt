@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import android.provider.Settings as AndroidSettings
 
 class MainActivity : ComponentActivity() {
@@ -174,8 +175,7 @@ class MainActivity : ComponentActivity() {
         var onOpen by remember { mutableStateOf(settings.listenOnOpen) }
         var afterQ by remember { mutableStateOf(settings.listenAfterQuestion) }
         var wake by remember { mutableStateOf(settings.wakeWordEnabled) }
-        var cutoff by remember { mutableFloatStateOf(settings.wakeCutoff.takeIf { it > 0f } ?: 0.97f) }
-        var folder by remember { mutableStateOf(settings.wakeModelFolder) }
+        var advanced by remember { mutableStateOf(false) }
         val wakeLevel by Assistant.wakeLevel.collectAsState()
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             OutlinedTextField(url, { url = it; settings.serverUrl = it }, label = { Text("Server, e.g. http://10.0.0.2:8797") },
@@ -197,17 +197,8 @@ class MainActivity : ComponentActivity() {
                 if (on && !settings.listeningPaused) withMic { WakeWordService.start(this@MainActivity) }
                 else if (!on) WakeWordService.stop(this@MainActivity)
             }
-            Text("Strictness ${"%.3f".format(cutoff)} (higher means fewer false wakes) · now ${"%.2f".format(wakeLevel)}",
-                style = MaterialTheme.typography.bodySmall)
-            Slider(cutoff, { cutoff = it }, valueRange = 0.80f..0.995f,
-                onValueChangeFinished = {
-                    settings.wakeCutoff = cutoff
-                    if (wake && !settings.listeningPaused) {
-                        WakeWordService.stop(this@MainActivity); WakeWordService.start(this@MainActivity)
-                    }
-                })
-            OutlinedTextField(folder, { folder = it; settings.wakeModelFolder = it },
-                label = { Text("Custom wake word folder (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
+            if (advanced) AdvancedWake(wake, wakeLevel)
 
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text("Permissions", style = MaterialTheme.typography.titleSmall)
@@ -235,6 +226,57 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent(AndroidSettings.ACTION_VOICE_INPUT_SETTINGS))
             }
         }
+    }
+
+    /** Wake word tuning, false-wake check and wake clips: kept out of the way of the everyday settings. */
+    @Composable
+    private fun AdvancedWake(wake: Boolean, wakeLevel: Float) {
+        var cutoff by remember { mutableFloatStateOf(settings.wakeCutoff.takeIf { it > 0f } ?: 0.97f) }
+        var folder by remember { mutableStateOf(settings.wakeModelFolder) }
+        var mode by remember { mutableStateOf(settings.verifyMode) }
+        var threshold by remember { mutableStateOf("%.3f".format(settings.verifyThreshold)) }
+        var saveClips by remember { mutableStateOf(settings.saveWakeClips) }
+        var speaker by remember { mutableStateOf(settings.clipSpeaker) }
+        val clips = remember(permTick) { WakeClips.count(this@MainActivity) }
+        val restart = {
+            if (wake && !settings.listeningPaused) { WakeWordService.stop(this@MainActivity); WakeWordService.start(this@MainActivity) }
+        }
+        Column(Modifier.fillMaxWidth()) {
+            Text("Strictness ${"%.3f".format(cutoff)} (higher means fewer false wakes) · now ${"%.2f".format(wakeLevel)}",
+                style = MaterialTheme.typography.bodySmall)
+            Slider(cutoff, { cutoff = it }, valueRange = 0.80f..0.995f,
+                onValueChangeFinished = { settings.wakeCutoff = cutoff; restart() })
+            Text("False-wake check (a second model must agree)", style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                listOf(Settings.VERIFY_ENFORCE to "On", Settings.VERIFY_SHADOW to "Log only", Settings.VERIFY_OFF to "Off")
+                    .forEach { (value, label) ->
+                        FilterChip(selected = mode == value, onClick = { mode = value; settings.verifyMode = value; restart() },
+                            label = { Text(label) }, modifier = Modifier.padding(end = 6.dp))
+                    }
+            }
+            OutlinedTextField(threshold, { v ->
+                threshold = v
+                v.toFloatOrNull()?.takeIf { it in 0f..1f }?.let { settings.verifyThreshold = it }
+            }, label = { Text("Check threshold (default 0.05)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            SwitchRow("Save wake clips for retraining", saveClips) { saveClips = it; settings.saveWakeClips = it }
+            OutlinedTextField(speaker, { speaker = it; settings.clipSpeaker = it },
+                label = { Text("Speaker on clips (e.g. daniel)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            TextButton(enabled = clips > 0, onClick = { shareClips() }) { Text("Share wake clips ($clips)") }
+            OutlinedTextField(folder, { folder = it; settings.wakeModelFolder = it },
+                label = { Text("Custom wake word folder (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        }
+    }
+
+    private fun shareClips() {
+        Thread {
+            val zip = runCatching { WakeClips.zip(this, settings.clipSpeakerLabel) }.getOrNull() ?: return@Thread
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", zip)
+            runOnUiThread {
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("application/zip")
+                    .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share wake clips"))
+            }
+        }.start()
     }
 
     /** The one listening on/off: pauses listen-on-open, listening again after a question and the wake word. */

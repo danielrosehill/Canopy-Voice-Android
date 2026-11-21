@@ -3,6 +3,7 @@ package com.danielrosehill.canopyvoice
 import android.content.ComponentName
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
@@ -136,6 +137,7 @@ object Assistant {
         }
         said.value = r.transcript
         reply.value = r.reply + (r.held?.let { "\n\nWaiting for a yes: $it" } ?: "")
+        if (r.speaker.isNotEmpty() && settings.clipSpeaker.isEmpty()) settings.clipSpeaker = r.speaker
         if (r.conversationId.isNotEmpty()) { conversationId = r.conversationId; conversationAt = System.currentTimeMillis() }
         r.wav?.let { phase.value = Phase.Speaking; play(app, it) }
         phase.value = Phase.Idle
@@ -155,18 +157,28 @@ object Assistant {
     private suspend fun play(app: Context, wav: ByteArray) {
         val f = File(app.cacheDir, "reply.wav")
         withContext(Dispatchers.IO) { f.writeBytes(wav) }
-        suspendCancellableCoroutine { cont ->
-            val p = MediaPlayer()
-            player = p
-            p.setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            p.setDataSource(f.absolutePath)
-            p.setOnCompletionListener { it.release(); if (player === it) player = null; if (cont.isActive) cont.resume(Unit) }
-            p.setOnErrorListener { mp, _, _ -> mp.release(); if (player === mp) player = null; if (cont.isActive) cont.resume(Unit); true }
-            cont.invokeOnCancellation { runCatching { p.release() } }
-            p.prepare()
-            p.start()
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
+        // Audio focus only while the reply plays (other audio ducks), released straight after; never held idle.
+        val audio = app.getSystemService(AudioManager::class.java)
+        val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            .setAudioAttributes(attrs).build()
+        audio.requestAudioFocus(focus)
+        try {
+            suspendCancellableCoroutine { cont ->
+                val p = MediaPlayer()
+                player = p
+                p.setAudioAttributes(attrs)
+                p.setDataSource(f.absolutePath)
+                p.setOnCompletionListener { it.release(); if (player === it) player = null; if (cont.isActive) cont.resume(Unit) }
+                p.setOnErrorListener { mp, _, _ -> mp.release(); if (player === mp) player = null; if (cont.isActive) cont.resume(Unit); true }
+                cont.invokeOnCancellation { runCatching { p.release() } }
+                p.prepare()
+                p.start()
+            }
+        } finally {
+            audio.abandonAudioFocusRequest(focus)
         }
     }
 }

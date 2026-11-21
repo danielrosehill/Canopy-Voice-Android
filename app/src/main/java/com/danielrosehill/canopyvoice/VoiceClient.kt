@@ -14,6 +14,8 @@ data class TurnResult(
     val conversationId: String,
     val held: String?,
     val wav: ByteArray?,
+    /** Speaker id the server resolved from the token (JSON turns only). */
+    val speaker: String = "",
 )
 
 class VoiceError(message: String) : Exception(message)
@@ -98,6 +100,7 @@ class VoiceClient(
             conversationId = j.optString("conversation_id", ""),
             held = held,
             wav = if (audio.isNotEmpty()) Base64.getDecoder().decode(audio) else null,
+            speaker = j.optString("speaker", ""),
         )
     }
 }

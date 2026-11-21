@@ -59,5 +59,33 @@ class Settings(context: Context) {
         get() = prefs.getString("wake_folder", "") ?: ""
         set(v) = prefs.edit().putString("wake_folder", v.trim()).apply()
 
+    /** Second-stage wake check (openWakeWord): [VERIFY_ENFORCE] drops failed wakes, [VERIFY_SHADOW] only logs. */
+    var verifyMode: String
+        get() = prefs.getString("verify_mode", VERIFY_ENFORCE) ?: VERIFY_ENFORCE
+        set(v) = prefs.edit().putString("verify_mode", v).apply()
+
+    /** Minimum second-stage score (0.05, as on the Jabra satellite; offline: false wakes 0.001-0.002). */
+    var verifyThreshold: Float
+        get() = prefs.getFloat("verify_threshold", 0.05f)
+        set(v) = prefs.edit().putFloat("verify_threshold", v).apply()
+
+    /** Save each checked wake as a WAV (see [WakeClips]) for retraining. */
+    var saveWakeClips: Boolean
+        get() = prefs.getBoolean("save_wake_clips", true)
+        set(v) = prefs.edit().putBoolean("save_wake_clips", v).apply()
+
+    /** Speaker label on saved wake clips; learned from the server's `speaker` on a typed turn if left empty. */
+    var clipSpeaker: String
+        get() = prefs.getString("clip_speaker", "") ?: ""
+        set(v) = prefs.edit().putString("clip_speaker", v.trim()).apply()
+
+    val clipSpeakerLabel: String get() = clipSpeaker.ifEmpty { "unknown" }
+
     val configured: Boolean get() = serverUrl.isNotEmpty() && token.isNotEmpty()
+
+    companion object {
+        const val VERIFY_ENFORCE = "enforce"
+        const val VERIFY_SHADOW = "shadow"
+        const val VERIFY_OFF = "off"
+    }
 }
