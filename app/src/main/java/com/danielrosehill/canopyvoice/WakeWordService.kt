@@ -21,6 +21,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.danielrosehill.canopyvoice.wakeword.MicroWakeWordDetector
 import com.danielrosehill.canopyvoice.wakeword.OpenWakeWordVerifier
+import com.danielrosehill.canopyvoice.wakeword.PcmRing
 import com.danielrosehill.canopyvoice.wakeword.WakeWordModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
