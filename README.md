@@ -18,7 +18,7 @@ plays.
 3. Opening the app starts listening. It stops on its own after about 1.2 s of silence, or tap the button.
 
 - **Listening on / paused (v1.3):** one switch for all hands-free listening, so you don't have to flip the
-  separate settings. It is on the main screen under the title, as a Quick Settings tile ("Yossi": edit your
+  separate settings. It is at the bottom of Settings (on the main screen until v1.5), as a Quick Settings tile ("Yossi": edit your
   Quick Settings panel and drag it in), and as **Pause listening** on the wake word notification. Paused means
   the app never opens the microphone by itself: no listening when opened, no listening again after a question,
   and the wake word service stops. **Talk**, typing and the assist gesture still work while paused (each is an
@@ -30,7 +30,7 @@ plays.
   launcher's widget list). One tap opens the chat thread and starts listening. It works with the wake word off and
   with listening paused, like **Talk** (`YossiWidget.kt`, `MainActivity.EXTRA_LISTEN`).
 - **Wake word switch (v1.5):** on the main screen. Off stops only the wake word service (no microphone service, no
-  notification); turning it on also lifts a pause. The listening on/off below moved to the bottom of Settings, and is still the tile.
+  notification); turning it on also lifts a pause. The listening on/off above moved to the bottom of Settings; the tile and notification still set it.
 - **Chat thread (v1.5):** the whole conversation is shown as bubbles. It is cleared when the server would have
   forgotten it (170 s after the last turn), on the next turn or the next time the app is opened by an intent. Kept in memory only.
   A rotation, or reopening from Recents, no longer repeats the launch request.
@@ -64,7 +64,7 @@ the bundled model is `app/src/main/assets/wakeword/hey_yossi.tflite` + `.json`, 
 [`danielrosehill/Hey-Yossi-microWakeWord`](https://huggingface.co/danielrosehill/Hey-Yossi-microWakeWord)
 (v1, trained 2026-10-29, CC BY-NC 4.0, cutoff 0.97, window 5). Only audio after a detection leaves the phone.
 
-- Settings > **Wake word** starts `WakeWordService`, a microphone foreground service with a notification
+- The **Wake word** switch (main screen) starts `WakeWordService`, a microphone foreground service with a notification
   (**Pause listening** on the notification pauses all hands-free listening, see Use; the wake word setting itself
   stays on, so resuming restarts the service). It has to be switched on from the open app: Android refuses to start a
   microphone service from the background or at boot.
