@@ -21,6 +21,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.coroutines.resume
 
+data class ChatMessage(val fromUser: Boolean, val text: String)
+
 enum class Phase { Idle, Listening, Thinking, Speaking }
 
 /**
@@ -30,14 +32,16 @@ enum class Phase { Idle, Listening, Thinking, Speaking }
 object Assistant {
     val phase = MutableStateFlow(Phase.Idle)
     val level = MutableStateFlow(0)
-    val said = MutableStateFlow("")
-    val reply = MutableStateFlow("")
+    /** The conversation on screen; cleared when the next turn starts a new conversation on the server. */
+    val thread = MutableStateFlow<List<ChatMessage>>(emptyList())
     val error = MutableStateFlow("")
     /** Smoothed wake word probability, for the readout in Settings. */
     val wakeLevel = MutableStateFlow(0f)
     val wakeRunning = MutableStateFlow(false)
     /** Mirrors [Settings.listeningPaused] for the screen; refreshed by [syncPaused]. */
     val paused = MutableStateFlow(false)
+    /** Mirrors [Settings.wakeWordEnabled] for the screen; refreshed by [syncPaused]. */
+    val wakeEnabled = MutableStateFlow(false)
 
     val mic = Mutex()
 
@@ -51,7 +55,21 @@ object Assistant {
     private var conversationAt = 0L
     private const val TTL_MS = 170_000L
 
-    fun syncPaused(context: Context) { paused.value = Settings(context).listeningPaused }
+    fun syncPaused(context: Context) {
+        val settings = Settings(context)
+        paused.value = settings.listeningPaused
+        wakeEnabled.value = settings.wakeWordEnabled
+    }
+
+    /** Wake word on/off alone: listening on open, after questions, Talk and the widget are untouched. */
+    fun setWakeWord(context: Context, on: Boolean) {
+        val app = context.applicationContext
+        val settings = Settings(app)
+        settings.wakeWordEnabled = on
+        wakeEnabled.value = on
+        if (!on) WakeWordService.stop(app)
+        else if (!settings.listeningPaused) runCatching { WakeWordService.start(app) }
+    }
 
     /**
      * The one listening on/off, used by the screen, the Quick Settings tile and the wake word notification.
@@ -76,7 +94,14 @@ object Assistant {
     fun currentConversation(): String? =
         conversationId?.takeIf { System.currentTimeMillis() - conversationAt < TTL_MS }
 
-    fun newConversation() { conversationId = null }
+    fun newConversation() { conversationId = null; thread.value = emptyList() }
+
+    /** The server has forgotten an expired conversation, so don't show it as if it were still going. */
+    fun dropExpiredThread() { if (currentConversation() == null) thread.value = emptyList() }
+
+    private fun say(fromUser: Boolean, text: String) {
+        if (text.isNotBlank()) thread.value = thread.value + ChatMessage(fromUser, text.trim())
+    }
 
     fun stopRecording() { recorder?.requestStop() }
 
@@ -95,6 +120,7 @@ object Assistant {
         if (!settings.configured) { error.value = "Set the server and token in Settings"; return }
         cancel()
         error.value = ""
+        dropExpiredThread()
         phase.value = Phase.Listening // the wake word loop sees this and releases the mic
         job = scope.launch {
             val rec = Recorder(app).also { recorder = it }
@@ -122,21 +148,23 @@ object Assistant {
         if (!settings.configured) { error.value = "Set the server and token in Settings"; return }
         cancel()
         error.value = ""
+        dropExpiredThread()
+        say(fromUser = true, text = text)
         phase.value = Phase.Thinking
         job = scope.launch {
             val client = settings.client()
-            handle(app, settings, runCatching { withContext(Dispatchers.IO) { client.textTurn(text, currentConversation()) } })
+            handle(app, settings, runCatching { withContext(Dispatchers.IO) { client.textTurn(text, currentConversation()) } }, typed = true)
         }
     }
 
-    private suspend fun handle(app: Context, settings: Settings, result: Result<TurnResult>) {
+    private suspend fun handle(app: Context, settings: Settings, result: Result<TurnResult>, typed: Boolean = false) {
         val r = result.getOrElse { e ->
             error.value = if (e is VoiceError) e.message.orEmpty() else "Can't reach ${settings.serverUrl}: ${e.message}"
             phase.value = Phase.Idle
             return
         }
-        said.value = r.transcript
-        reply.value = r.reply + (r.held?.let { "\n\nWaiting for a yes: $it" } ?: "")
+        if (!typed) say(fromUser = true, text = r.transcript)
+        say(fromUser = false, text = r.reply + (r.held?.let { "\n\nWaiting for a yes: $it" } ?: ""))
         if (r.speaker.isNotEmpty() && settings.clipSpeaker.isEmpty()) settings.clipSpeaker = r.speaker
         if (r.conversationId.isNotEmpty()) { conversationId = r.conversationId; conversationAt = System.currentTimeMillis() }
         r.wav?.let { phase.value = Phase.Speaking; play(app, it) }

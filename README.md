@@ -26,6 +26,15 @@ plays.
   whatever they were. Resuming from the tile with the wake word on opens the app, because Android only lets a
   microphone service start while the app is in the foreground.
 
+- **Widget (v1.5):** a 1x1 home screen widget (Settings > **Add the Yossi widget to the home screen**, or the
+  launcher's widget list). One tap opens the chat thread and starts listening. It works with the wake word off and
+  with listening paused, like **Talk** (`YossiWidget.kt`, `MainActivity.EXTRA_LISTEN`).
+- **Wake word switch (v1.5):** on the main screen. Off stops only the wake word service (no microphone service, no
+  notification); turning it on also lifts a pause. The listening on/off below moved to the bottom of Settings, and is still the tile.
+- **Chat thread (v1.5):** the whole conversation is shown as bubbles. It is cleared when the server would have
+  forgotten it (170 s after the last turn), on the next turn or the next time the app is opened by an intent. Kept in memory only.
+  A rotation, or reopening from Recents, no longer repeats the launch request.
+
 - **Follow-ups:** the app sends back `conversation_id` for 170 s, under the server's `session_ttl_s` (180 s), so
   "and tomorrow?" works. **New conversation** drops it.
 - **Questions and confirmations:** when a reply ends in a question (canopy-voice reads a held action back and asks

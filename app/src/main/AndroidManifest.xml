@@ -68,6 +68,19 @@
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
+        <!-- Home screen widget: one tap opens the chat thread, listening. -->
+        <receiver
+            android:name=".YossiWidget"
+            android:exported="false"
+            android:label="@string/widget_talk">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/yossi_widget_info" />
+        </receiver>
+
         <!-- Quick Settings tile: the listening on/off (pause / resume hands-free listening). -->
         <service
             android:name=".ListeningTileService"

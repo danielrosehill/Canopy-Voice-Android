@@ -1,6 +1,8 @@
 package com.danielrosehill.canopyvoice
 
 import android.Manifest
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -13,6 +15,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -48,7 +53,8 @@ class MainActivity : ComponentActivity() {
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Surface(Modifier.fillMaxSize()) { Screen() } } }
         Assistant.syncPaused(this)
         if (settings.wakeWordEnabled && !settings.listeningPaused) withMic { WakeWordService.start(this) }
-        onIntent(intent, firstLaunch = true)
+        // Not again after a rotation or a process restore: the launch intent has already been acted on.
+        if (savedInstanceState == null) onIntent(intent, firstLaunch = true)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -69,8 +75,12 @@ class MainActivity : ComponentActivity() {
     private fun onIntent(intent: Intent?, firstLaunch: Boolean) {
         if (intent?.getBooleanExtra(EXTRA_FROM_WAKE, false) == true) return // the turn is already running
         if (intent?.getBooleanExtra(EXTRA_NO_LISTEN, false) == true) return // opened by the tile to resume
-        val explicit = intent?.getBooleanExtra(EXTRA_LISTEN, false) == true ||
-            intent?.action == Intent.ACTION_ASSIST || intent?.action == Intent.ACTION_VOICE_COMMAND
+        // Reopened from Recents: Android replays the old intent, which is not a new request.
+        val replayed = ((intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        val explicit = !replayed && (intent?.getBooleanExtra(EXTRA_LISTEN, false) == true ||
+            intent?.action == Intent.ACTION_ASSIST || intent?.action == Intent.ACTION_VOICE_COMMAND)
+        if (explicit && settings.configured) showSettings = false
+        if (Assistant.phase.value == Phase.Idle) Assistant.dropExpiredThread()
         // Paused: no listening on open; an explicit request (assist gesture, headset button) still listens.
         val onOpen = firstLaunch && settings.listenOnOpen && !settings.listeningPaused
         if (settings.configured && (explicit || onOpen) && Assistant.phase.value == Phase.Idle) listen()
@@ -90,13 +100,12 @@ class MainActivity : ComponentActivity() {
     private fun Screen() {
         val phase by Assistant.phase.collectAsState()
         val level by Assistant.level.collectAsState()
-        val said by Assistant.said.collectAsState()
-        val reply by Assistant.reply.collectAsState()
+        val thread by Assistant.thread.collectAsState()
         val error by Assistant.error.collectAsState()
         val wakeOn by Assistant.wakeRunning.collectAsState()
         val paused by Assistant.paused.collectAsState()
         Column(
-            Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(20.dp).verticalScroll(rememberScrollState()),
+            Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -110,52 +119,43 @@ class MainActivity : ComponentActivity() {
                 }
                 TextButton(onClick = { showSettings = !showSettings }) { Text(if (showSettings) "Done" else "Settings") }
             }
-            if (showSettings) SettingsPanel()
+            if (showSettings) {
+                Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                    SettingsPanel()
+                    ListeningToggle(paused)
+                }
+                return@Column
+            }
 
-            Spacer(Modifier.height(16.dp))
-            ListeningToggle(paused)
+            WakeWordRow()
+            ChatThread(thread, Modifier.weight(1f).fillMaxWidth())
+            if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 8.dp))
+            if (thread.isNotEmpty() && phase == Phase.Idle) {
+                TextButton(onClick = { Assistant.newConversation() }) { Text("New conversation") }
+            }
 
-            Spacer(Modifier.height(32.dp))
             val label = when (phase) {
                 Phase.Idle -> "Talk"
                 Phase.Listening -> "Listening…"
                 Phase.Thinking -> "Thinking…"
                 Phase.Speaking -> "Stop"
             }
-            val grow = if (phase == Phase.Listening) (level / 32767f).coerceIn(0f, 1f) * 40 else 0f
-            Button(
-                onClick = {
-                    when (phase) {
-                        Phase.Idle -> listen()
-                        Phase.Listening -> Assistant.stopRecording()
-                        else -> Assistant.cancel()
-                    }
-                },
-                shape = CircleShape,
-                modifier = Modifier.size((180 + grow).dp),
-            ) { Text(label, fontSize = 24.sp) }
-
-            if (Assistant.currentConversation() != null && phase == Phase.Idle) {
-                TextButton(onClick = { Assistant.newConversation(); Assistant.said.value = ""; Assistant.reply.value = "" }) {
-                    Text("New conversation")
-                }
-            }
-            if (error.isNotEmpty()) {
-                Spacer(Modifier.height(16.dp))
-                Text(error, color = MaterialTheme.colorScheme.error)
-            }
-            if (said.isNotEmpty()) {
-                Spacer(Modifier.height(24.dp))
-                Text("You", style = MaterialTheme.typography.labelMedium, modifier = Modifier.fillMaxWidth())
-                Text(said, modifier = Modifier.fillMaxWidth())
-            }
-            if (reply.isNotEmpty()) {
-                Spacer(Modifier.height(16.dp))
-                Text("Yossi", style = MaterialTheme.typography.labelMedium, modifier = Modifier.fillMaxWidth())
-                Text(reply, fontSize = 18.sp, modifier = Modifier.fillMaxWidth())
+            val grow = if (phase == Phase.Listening) (level / 32767f).coerceIn(0f, 1f) * 24 else 0f
+            Box(Modifier.height(144.dp), contentAlignment = Alignment.Center) {
+                Button(
+                    onClick = {
+                        when (phase) {
+                            Phase.Idle -> listen()
+                            Phase.Listening -> Assistant.stopRecording()
+                            else -> Assistant.cancel()
+                        }
+                    },
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(4.dp),
+                    modifier = Modifier.size((116 + grow).dp),
+                ) { Text(label, fontSize = 18.sp, maxLines = 1) }
             }
 
-            Spacer(Modifier.height(24.dp))
             var typed by remember { mutableStateOf("") }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(typed, { typed = it }, label = { Text("Or type") }, modifier = Modifier.weight(1f))
@@ -166,6 +166,51 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** The conversation as chat bubbles, newest at the bottom and kept in view. */
+    @Composable
+    private fun ChatThread(thread: List<ChatMessage>, modifier: Modifier) {
+        val state = rememberLazyListState()
+        LaunchedEffect(thread.size) { if (thread.isNotEmpty()) state.animateScrollToItem(thread.size - 1) }
+        LazyColumn(modifier, state = state, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
+            contentPadding = PaddingValues(vertical = 8.dp)) {
+            items(thread) { m ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = if (m.fromUser) Alignment.CenterEnd else Alignment.CenterStart) {
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = if (m.fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.widthIn(max = 300.dp),
+                    ) { Text(m.text, fontSize = 17.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) }
+                }
+            }
+        }
+    }
+
+    /** Wake word on/off on the main screen; with it off, Talk, the widget and the assist gesture start a turn. */
+    @Composable
+    private fun WakeWordRow() {
+        val on by Assistant.wakeEnabled.collectAsState()
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Wake word “Hey Yossi”", modifier = Modifier.weight(1f))
+            Switch(on, { setWakeWord(it) })
+        }
+    }
+
+    /** Turning it on also lifts a pause, otherwise the switch would be on with nothing listening. */
+    private fun setWakeWord(on: Boolean) {
+        if (!on) { Assistant.setWakeWord(this, false); return }
+        withMic {
+            Assistant.setWakeWord(this, true)
+            if (settings.listeningPaused) Assistant.setPaused(this, false)
+        }
+    }
+
+    private fun addWidget() {
+        val manager = AppWidgetManager.getInstance(this)
+        if (manager.isRequestPinAppWidgetSupported)
+            manager.requestPinAppWidget(ComponentName(this, YossiWidget::class.java), null, null)
+        else Assistant.error.value = "Add the Yossi widget from your launcher's widget list"
+    }
+
     @Composable
     private fun SettingsPanel() {
         var url by remember { mutableStateOf(settings.serverUrl) }
@@ -174,7 +219,7 @@ class MainActivity : ComponentActivity() {
         var cfSecret by remember { mutableStateOf(settings.cfClientSecret) }
         var onOpen by remember { mutableStateOf(settings.listenOnOpen) }
         var afterQ by remember { mutableStateOf(settings.listenAfterQuestion) }
-        var wake by remember { mutableStateOf(settings.wakeWordEnabled) }
+        val wake by Assistant.wakeEnabled.collectAsState()
         var advanced by remember { mutableStateOf(false) }
         val wakeLevel by Assistant.wakeLevel.collectAsState()
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
@@ -192,11 +237,7 @@ class MainActivity : ComponentActivity() {
             SwitchRow("Listen again after a question", afterQ) { afterQ = it; settings.listenAfterQuestion = it }
 
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
-            SwitchRow("Wake word “Hey Yossi” (on the phone)", wake) { on ->
-                wake = on; settings.wakeWordEnabled = on
-                if (on && !settings.listeningPaused) withMic { WakeWordService.start(this@MainActivity) }
-                else if (!on) WakeWordService.stop(this@MainActivity)
-            }
+            TextButton(onClick = { addWidget() }) { Text("Add the Yossi widget to the home screen") }
             TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "Hide advanced" else "Advanced") }
             if (advanced) AdvancedWake(wake, wakeLevel)
 
